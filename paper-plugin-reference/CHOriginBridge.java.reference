@@ -1,0 +1,257 @@
+// =============================================
+//  CH|ORIGIN Bridge Plugin for Paper 1.21.x
+//  plugin.yml + Main Class Skeleton
+// =============================================
+//
+//  This is a REFERENCE IMPLEMENTATION for your Paper/Spigot plugin.
+//  Copy the Java files into your plugin project.
+//
+//  Build with Maven or Gradle, drop the .jar into your server's /plugins folder.
+//
+// =============================================
+
+// ---- plugin.yml ----
+/*
+name: CHOriginBridge
+version: 1.0.0
+main: com.chorigin.bridge.CHOriginBridge
+api-version: '1.21'
+description: Bridges the CH|ORIGIN Minecraft server with the Discord bot & Webstore
+authors:
+  - CHOriginTeam
+commands:
+  link:
+    description: Generate a link code to connect your Discord account
+    usage: /<command>
+  linkstatus:
+    description: Check your Discord link status
+    usage: /<command>
+*/
+
+// ---- CHOriginBridge.java (Main Plugin Class) ----
+/*
+package com.chorigin.bridge;
+
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitRunnable;
+
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.util.logging.Level;
+
+public class CHOriginBridge extends JavaPlugin {
+
+    private String apiBaseUrl;
+    private String apiSecret;
+    private int pollIntervalTicks;
+
+    @Override
+    public void onEnable() {
+        saveDefaultConfig();
+        apiBaseUrl = getConfig().getString("api.base-url", "http://localhost:3001");
+        apiSecret  = getConfig().getString("api.secret-key", "chorigin_default_secret_change_me");
+        pollIntervalTicks = getConfig().getInt("api.poll-interval-seconds", 10) * 20;
+
+        getLogger().info("CH|ORIGIN Bridge Plugin enabled! API: " + apiBaseUrl);
+
+        // Start delivery polling task
+        new DeliveryPoller().runTaskTimerAsynchronously(this, 100L, pollIntervalTicks);
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Only players can use this command.");
+            return true;
+        }
+
+        switch (command.getName().toLowerCase()) {
+            case "link" -> handleLink(player);
+            case "linkstatus" -> handleLinkStatus(player);
+        }
+        return true;
+    }
+
+    private void handleLink(Player player) {
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                String uuid = player.getUniqueId().toString();
+                String name = player.getName();
+
+                String json = "{\"uuid\":\"" + uuid + "\",\"username\":\"" + name + "\"}";
+                String response = httpPost(apiBaseUrl + "/api/minecraft/link/request", json);
+
+                // Parse simple JSON response for "code" and "instructions"
+                String code = extractJsonValue(response, "code");
+                String instructions = extractJsonValue(response, "instructions");
+
+                if (code != null) {
+                    Bukkit.getScheduler().runTask(CHOriginBridge.this, () -> {
+                        player.sendMessage("");
+                        player.sendMessage(ChatColor.GOLD + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        player.sendMessage(ChatColor.YELLOW + "  Your Link Code: " + ChatColor.GREEN + ChatColor.BOLD + code);
+                        player.sendMessage(ChatColor.GRAY + "  " + (instructions != null ? instructions : ""));
+                        player.sendMessage(ChatColor.GRAY + "  Code expires in 10 minutes.");
+                        player.sendMessage(ChatColor.GOLD + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                        player.sendMessage("");
+                    });
+                } else {
+                    player.sendMessage(ChatColor.RED + "Failed to generate link code. Try again later.");
+                }
+            } catch (Exception e) {
+                getLogger().log(Level.WARNING, "Link request failed", e);
+                player.sendMessage(ChatColor.RED + "Could not reach the bridge API. Is it running?");
+            }
+        });
+    }
+
+    private void handleLinkStatus(Player player) {
+        Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                String uuid = player.getUniqueId().toString();
+                String response = httpGet(apiBaseUrl + "/api/minecraft/check-link/" + uuid);
+                String linked = extractJsonValue(response, "linked");
+
+                Bukkit.getScheduler().runTask(CHOriginBridge.this, () -> {
+                    if ("true".equals(linked)) {
+                        player.sendMessage(ChatColor.GREEN + "✅ Your account is linked to Discord!");
+                    } else {
+                        player.sendMessage(ChatColor.YELLOW + "Your account is NOT linked. Use /link to get started.");
+                    }
+                });
+            } catch (Exception e) {
+                player.sendMessage(ChatColor.RED + "Could not check link status.");
+            }
+        });
+    }
+
+    // --- Delivery Poller: Fetches queued commands from the Bridge API and runs them ---
+    private class DeliveryPoller extends BukkitRunnable {
+        @Override
+        public void run() {
+            try {
+                String response = httpGet(apiBaseUrl + "/api/minecraft/deliveries?limit=20");
+                // Very simple JSON array parser for [{id, command}, ...]
+                // In production, use a proper JSON library like Gson
+                if (response == null || !response.contains("\"commands\"")) return;
+
+                // Extract commands array content
+                int arrStart = response.indexOf("[");
+                int arrEnd = response.lastIndexOf("]");
+                if (arrStart < 0 || arrEnd < 0) return;
+                String arrContent = response.substring(arrStart + 1, arrEnd).trim();
+                if (arrContent.isEmpty()) return;
+
+                StringBuilder confirmedIds = new StringBuilder("[");
+                boolean first = true;
+
+                // Split by },{ pattern
+                String[] entries = arrContent.split("\\},\\s*\\{");
+                for (String entry : entries) {
+                    entry = entry.replace("{", "").replace("}", "");
+                    String id = extractJsonValue("{" + entry + "}", "id");
+                    String cmd = extractJsonValue("{" + entry + "}", "command");
+
+                    if (cmd != null && !cmd.isEmpty()) {
+                        // Execute on main thread
+                        final String finalCmd = cmd;
+                        Bukkit.getScheduler().runTask(CHOriginBridge.this, () -> {
+                            getLogger().info("[Delivery] Executing: " + finalCmd);
+                            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), finalCmd);
+                        });
+                    }
+
+                    if (id != null) {
+                        if (!first) confirmedIds.append(",");
+                        confirmedIds.append(id);
+                        first = false;
+                    }
+                }
+                confirmedIds.append("]");
+
+                // Confirm executed commands
+                if (!first) {
+                    String confirmJson = "{\"commandIds\":" + confirmedIds + "}";
+                    httpPost(apiBaseUrl + "/api/minecraft/deliveries/confirm", confirmJson);
+                }
+            } catch (Exception e) {
+                // Silently retry next cycle
+            }
+        }
+    }
+
+    // --- HTTP Helpers ---
+    private String httpGet(String urlStr) throws IOException {
+        URL url = URI.create(urlStr).toURL();
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("Authorization", "Bearer " + apiSecret);
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(5000);
+        return readResponse(conn);
+    }
+
+    private String httpPost(String urlStr, String jsonBody) throws IOException {
+        URL url = URI.create(urlStr).toURL();
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("Authorization", "Bearer " + apiSecret);
+        conn.setDoOutput(true);
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(5000);
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
+        }
+        return readResponse(conn);
+    }
+
+    private String readResponse(HttpURLConnection conn) throws IOException {
+        int code = conn.getResponseCode();
+        InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
+        if (is == null) return "";
+        BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        return sb.toString();
+    }
+
+    private static String extractJsonValue(String json, String key) {
+        String search = "\"" + key + "\"";
+        int idx = json.indexOf(search);
+        if (idx < 0) return null;
+        int colonIdx = json.indexOf(':', idx + search.length());
+        if (colonIdx < 0) return null;
+        int start = colonIdx + 1;
+        // skip whitespace
+        while (start < json.length() && json.charAt(start) == ' ') start++;
+        if (start >= json.length()) return null;
+
+        char first = json.charAt(start);
+        if (first == '"') {
+            int end = json.indexOf('"', start + 1);
+            return end > start ? json.substring(start + 1, end) : null;
+        } else {
+            // number, boolean, null
+            int end = start;
+            while (end < json.length() && json.charAt(end) != ',' && json.charAt(end) != '}' && json.charAt(end) != ']') end++;
+            return json.substring(start, end).trim();
+        }
+    }
+}
+*/
+
+// ---- config.yml (default config for the Paper plugin) ----
+/*
+api:
+  base-url: "http://localhost:3001"
+  secret-key: "chorigin_super_secret_bridge_key_12345"
+  poll-interval-seconds: 10
+*/

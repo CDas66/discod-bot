@@ -1,0 +1,21 @@
+{
+  "name": "chorigin-bridge-bot",
+  "version": "1.0.0",
+  "description": "CH|ORIGIN Discord Bot — bridges Webstore, Discord, and Minecraft Server",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/bot/deploy-commands.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["discord", "minecraft", "bridge", "webstore"],
+  "author": "CH|ORIGIN",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "discord.js": "^14.28.1",
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0"
+  }
+}
